@@ -1,7 +1,7 @@
 "use client"
 
-import ChatPage from "@/components/chat-page"
-import LandingPage from "@/components/landing-page"
+import chatPage from "@/components/chat-page"
+import landingPage from "@/components/landing-page"
 import { useEffect, useState } from "react"
 
 export default function Home() {
@@ -14,19 +14,19 @@ export default function Home() {
     const savedUser = localStorage.getItem("user")
 
     if (savedAuth === "true") {
-  try {
-    const parsedUser = savedUser ? JSON.parse(savedUser) : null
+      try {
+        const parsedUser = savedUser ? JSON.parse(savedUser) : null
 
-    if (parsedUser) {
-      setIsAuthenticated(true)
-      setUser(parsedUser)
+        if (parsedUser) {
+          setIsAuthenticated(true)
+          setUser(parsedUser)
+        }
+      } catch (e) {
+        console.error("❌ Invalid user JSON:", savedUser)
+        localStorage.removeItem("user")
+        localStorage.removeItem("isAuthenticated")
+      }
     }
-  } catch (e) {
-    console.error("❌ Invalid user JSON:", savedUser)
-    localStorage.removeItem("user")
-    localStorage.removeItem("isAuthenticated")
-  }
-}
 
 
     setIsLoading(false) // ✅ đã đọc xong localStorage
