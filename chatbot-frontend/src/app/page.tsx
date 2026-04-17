@@ -1,7 +1,7 @@
 "use client"
 
-import chatPage from "@/components/chat-page"
-import landingPage from "@/components/landing-page"
+import ChatPage from "@/components/chat-page"
+import LandingPage from "@/components/landing-page"
 import { useEffect, useState } from "react"
 
 export default function Home() {
