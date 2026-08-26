@@ -56,6 +56,7 @@ export async function POST(request: Request) {
     return NextResponse.json({
       conversationId: data.conversation_id,
       response: data.response,
+      title: data.title,
     });
 
   } catch (error: any) {
