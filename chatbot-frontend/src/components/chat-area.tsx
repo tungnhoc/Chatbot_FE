@@ -18,12 +18,13 @@ import {
 } from "lucide-react"
 import type React from "react"
 import { useEffect, useRef, useState } from "react"
-import type { Conversation } from "../types/chat"
+import type { Conversation, SourceCitation } from "../types/chat"
+import { pollDocument, statusLabel, type UploadEntry } from "@/app/utils/documents"
 
 interface ChatAreaProps {
   conversation: Conversation | undefined
   onSendMessage: (message: string) => void
-  onReceiveResponse: (response: string) => void
+  onReceiveResponse: (response: string, sources?: SourceCitation[], conversationId?: number, traceId?: string) => void
   onRenameConversation?: (id: string, newTitle: string) => void
   user: { id: string; email: string } | null
   onToggleSidebar?: () => void
@@ -62,13 +63,46 @@ export default function ChatArea({
   isPaused,
 }: ChatAreaProps) {
   const [input, setInput] = useState("")
-  const [files, setFiles] = useState<
-    { file: File; id?: string; status: "processing" | "done" }[]
-  >([])
+  const [files, setFiles] = useState<UploadEntry[]>([])
+  const [documentError, setDocumentError] = useState("")
+  const uploadScope = useRef<{ id?: number; controller: AbortController }>({ controller: new AbortController() })
+  const documentsBusy = files.some(item => ["uploading", "queued", "processing"].includes(item.status))
+
+  const trackDocument = async (key: string, id: string, signal: AbortSignal) => {
+    try {
+      await pollDocument(id, (status, error) => {
+        if (!signal.aborted) setFiles(prev => prev.map(item => item.key === key ? { ...item, status, error } : item))
+      }, signal)
+    } catch (error) {
+      if (!signal.aborted) setFiles(prev => prev.map(item => item.key === key ? {
+        ...item, status: "error", error: error instanceof Error ? error.message : "Kh?ng th? ki?m tra t?i li?u"
+      } : item))
+    }
+  }
 
   useEffect(() => {
+    const controller = new AbortController()
+    uploadScope.current = { id: conversation?.conversationID, controller }
     setFiles([])
     setInput("")
+    setDocumentError("")
+    if (conversation) {
+      authFetch(`/api/chat/load-files/${conversation.conversationID}`, { signal: controller.signal })
+        .then(async response => {
+          const data = await response.json()
+          if (!response.ok) throw new Error(data.error || "Kh?ng th? t?i danh s?ch t?i li?u")
+          if (controller.signal.aborted) return
+          const entries: UploadEntry[] = (data.files || []).map((item: { id: number; filename?: string; status?: string }) => ({
+            key: `doc-${item.id}`, id: String(item.id), name: item.filename || `T?i li?u ${item.id}`,
+            status: item.status || "error"
+          }))
+          // Keep files selected while the initial list was loading.
+          setFiles(prev => [...entries.filter(item => !prev.some(existing => existing.id === item.id)), ...prev])
+          entries.filter(item => item.id && ["queued", "processing"].includes(item.status))
+            .forEach(item => { void trackDocument(item.key, item.id!, controller.signal) })
+        }).catch(error => { if (!controller.signal.aborted) setDocumentError(error.message) })
+    }
+    return () => controller.abort()
   }, [conversation?.conversationID])
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
@@ -85,7 +119,7 @@ export default function ChatArea({
 
   const handleSendMessage = async () => {
     const text = input.trim()
-    if (!text) return
+    if (!text || documentsBusy || isAssistantTyping) return
 
     if (!conversation) {
       alert("❌ Chưa có cuộc trò chuyện để gửi tin nhắn!")
@@ -123,7 +157,7 @@ export default function ChatArea({
     }
 
     const documentIds = files
-      .filter((f) => f.status === "done" && f.id)
+      .filter((f) => f.status === "ready" && f.id)
       .map((f) => f.id as string)
 
     onSendMessage(text)
@@ -162,7 +196,7 @@ export default function ChatArea({
           )
         }
       }
-      onReceiveResponse(assistantResponse)
+      onReceiveResponse(assistantResponse, data.sources || [], conversationId, data.trace_id)
     } catch (err) {
       console.error("❌ Lỗi handleSendMessage:", err)
       alert("Gửi tin nhắn thất bại, vui lòng kiểm tra kết nối.")
@@ -171,54 +205,63 @@ export default function ChatArea({
     }
   }
 
-  const uploadSingleFile = async (file: File) => {
-    if (!conversation) return
-
+  const uploadSingleFile = async (file: File, key: string) => {
+    const scope = uploadScope.current
+    if (!scope.id || scope.controller.signal.aborted) return
     try {
       const form = new FormData()
       form.append("files", file)
-
-      const res = await authFetch(`/api/chat/upload-file/${conversation.conversationID}`, {
-        method: "POST",
-        body: form,
+      const response = await authFetch(`/api/chat/upload-file/${scope.id}`, {
+        method: "POST", body: form, signal: scope.controller.signal
       })
-
-      const data = await res.json()
-
-      if (!res.ok || !data.success) {
-        throw new Error(data.error || "Upload thất bại")
-      }
-
-      const uploaded = data.uploaded?.[0]
-      const documentId = uploaded?.document_id || data.documentIds?.[0]
-
-      setFiles((prev) =>
-        prev.map((f) =>
-          f.file === file
-            ? { ...f, id: documentId, status: "done" }
-            : f
-        )
-      )
-    } catch (err) {
-      console.error("Upload error:", err)
-      setFiles((prev) => prev.filter((f) => f.file !== file))
-      alert("Tải lên thất bại cho file: " + file.name)
+      const data = await response.json()
+      const uploaded = data.uploaded?.find((item: { success: boolean }) => item.success)
+      if (!response.ok || !uploaded?.document_id) throw new Error(data.error || data.uploaded?.[0]?.error || "Upload th?t b?i")
+      if (scope.controller.signal.aborted) return
+      const id = String(uploaded.document_id)
+      setFiles(prev => prev.map(item => item.key === key ? { ...item, id, status: uploaded.status, error: undefined } : item))
+      await trackDocument(key, id, scope.controller.signal)
+    } catch (error) {
+      if (!scope.controller.signal.aborted) setFiles(prev => prev.map(item => item.key === key ? {
+        ...item, status: "error", error: error instanceof Error ? error.message : "Upload th?t b?i"
+      } : item))
     }
   }
 
-  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files) {
-      const newlySelected = Array.from(e.target.files)
-      setFiles((prev) => [
-        ...prev,
-        ...newlySelected.map((file) => ({
-          file,
-          status: "processing" as const,
-        })),
-      ])
-      e.target.value = ""
-      newlySelected.forEach((file) => uploadSingleFile(file))
+  const retryDocument = async (item: UploadEntry) => {
+    const { controller } = uploadScope.current
+    if (!item.id) {
+      if (item.file) {
+        setFiles(prev => prev.map(entry => entry.key === item.key ? { ...entry, status: "uploading", error: undefined } : entry))
+        await uploadSingleFile(item.file, item.key)
+      }
+      return
     }
+    try {
+      if (item.status === "failed") {
+        const response = await authFetch(`/api/chat/documents/${item.id}/retry`, { method: "POST", signal: controller.signal })
+        const data = await response.json()
+        if (!response.ok) throw new Error(data.error || "Kh?ng th? th? l?i")
+      }
+      setFiles(prev => prev.map(entry => entry.key === item.key ? { ...entry, status: "queued", error: undefined } : entry))
+      await trackDocument(item.key, item.id, controller.signal)
+    } catch (error) {
+      if (!controller.signal.aborted) setDocumentError(error instanceof Error ? error.message : "Kh?ng th? th? l?i")
+    }
+  }
+
+  const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const selected = Array.from(event.target.files || [])
+    event.target.value = ""
+    const supported = /\.(pdf|docx|txt|md|csv|xlsx)$/i
+    if (selected.length > 10 || selected.some(file => !supported.test(file.name) || file.size > 20 * 1024 * 1024)) {
+      setDocumentError("Ch?n t?i ?a 10 file PDF, DOCX, TXT, MD, CSV ho?c XLSX; m?i file t?i ?a 20 MiB.")
+      return
+    }
+    setDocumentError("")
+    const entries: UploadEntry[] = selected.map(file => ({ key: crypto.randomUUID(), file, name: file.name, status: "uploading" }))
+    setFiles(prev => [...prev, ...entries])
+    entries.forEach(item => { void uploadSingleFile(item.file!, item.key) })
   }
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
@@ -344,6 +387,22 @@ export default function ChatArea({
               >
                 <p className="break-words whitespace-pre-line leading-6">{message.text}</p>
 
+                {message.sources && message.sources.length > 0 && (
+                  <div className="mt-3 border-t border-slate-700/50 pt-2">
+                    <p className="text-xs font-semibold text-indigo-300 mb-1">Ngu?n tham kh?o</p>
+                    <ul className="space-y-1 text-xs text-slate-300">
+                      {message.sources.map(source => (
+                        <li key={source.id}>
+                          [{source.id}] {source.filename}
+                          {source.page ? ` ? Trang ${source.page}` : ""}
+                          {source.sheet ? ` ? Sheet ${source.sheet}` : ""}
+                          {source.row ? ` ? H?ng ${source.row}` : ""}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
                 {message.files && message.files.length > 0 && (
                   <div className="mt-3 pt-2 border-t border-slate-700/50 space-y-1.5">
                     {message.files.map((file, idx) => (
@@ -388,6 +447,8 @@ export default function ChatArea({
       {/* Floating Bottom Input Dock */}
       <div className="p-4 sm:p-6 bg-[#0B0F17]/90 backdrop-blur-md border-t border-slate-800/80">
         <div className="max-w-4xl mx-auto">
+          {documentError && <p role="alert" className="mb-2 text-sm text-rose-300">{documentError}</p>}
+          {documentsBusy && <p role="status" className="mb-2 text-xs text-indigo-300">T?i li?u ?ang ???c x? l?. B?n c? th? g?i c?u h?i khi x? l? xong.</p>}
           {/* File Badges */}
           {files.length > 0 && (
             <div className="mb-3 flex flex-wrap gap-2">
@@ -395,19 +456,27 @@ export default function ChatArea({
                 <div
                   key={idx}
                   className={`flex items-center gap-2 px-3 py-1.5 rounded-xl text-xs font-medium border ${
-                    item.status === "done"
+                    item.status === "ready"
                       ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-300"
                       : "bg-slate-800/80 border-slate-700 text-slate-300"
                   }`}
                 >
                   <FileText className="w-3.5 h-3.5" />
-                  <span className="truncate max-w-[180px]">{item.file.name}</span>
-                  {item.status === "processing" ? (
+                  <span className="truncate max-w-[180px]">{item.name}</span>
+                  {["uploading", "queued", "processing"].includes(item.status) ? (
                     <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-400" />
                   ) : (
                     <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
                   )}
+                  <span>{statusLabel[item.status]}</span>
+                  {item.error && <span className="text-rose-300 max-w-[240px] truncate" title={item.error}>{item.error}</span>}
+                  {["failed", "error"].includes(item.status) && (
+                    <button type="button" onClick={() => { void retryDocument(item) }} className="underline text-indigo-300">
+                      {item.status === "failed" ? "Th? l?i" : "Ki?m tra l?i"}
+                    </button>
+                  )}
                   <button
+                    aria-label={`B? ch?n ${item.name}`}
                     onClick={() => {
                       const next = files.filter((_, i) => i !== idx)
                       setFiles(next)
@@ -437,7 +506,7 @@ export default function ChatArea({
               ref={fileInputRef}
               type="file"
               multiple
-              accept=".pdf,.doc,.docx,.txt"
+              accept=".pdf,.docx,.txt,.md,.csv,.xlsx"
               onChange={handleFileSelect}
               className="hidden"
             />
@@ -452,7 +521,7 @@ export default function ChatArea({
 
             <Button
               onClick={handleSendMessage}
-              disabled={!input.trim() || Boolean(isAssistantTyping && !isPaused)}
+              disabled={!input.trim() || documentsBusy || Boolean(isAssistantTyping && !isPaused)}
               className="bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl p-2.5 h-10 w-10 disabled:opacity-40 disabled:hover:bg-indigo-600 transition-all flex items-center justify-center flex-shrink-0 shadow-md shadow-indigo-600/20"
             >
               <Send className="w-4 h-4" />

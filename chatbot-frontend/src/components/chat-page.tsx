@@ -2,7 +2,7 @@
 
 import { authFetch } from "@/app/utils/authFetch"
 import { useEffect, useState } from "react"
-import type { Conversation } from "../types/chat"
+import type { Conversation, SourceCitation } from "../types/chat"
 import ChatArea from "./chat-area"
 import Sidebar from "./sidebar"
 
@@ -59,20 +59,22 @@ export default function ChatPage({ user, onLogout }: ChatPageProps) {
   }
 
   // Nhận response từ API và đẩy lên UI
-  const handleReceiveResponse = (response: string) => {
+  const handleReceiveResponse = (response: string, sources: SourceCitation[] = [], conversationId?: number, traceId?: string) => {
     if (!response) return
 
     const assistantMessage = {
       messageID: Date.now(),
-      conversationID: Number(activeConversationId),
+      conversationID: conversationId ?? Number(activeConversationId),
       role: "assistant" as const,
       text: response,
+      sources,
+      trace_id: traceId,
       timestamp: new Date().toISOString(),
     }
 
     setConversations((prev: any) =>
       (prev as any).map((conv: any) => {
-        if (String(conv.conversationID) === activeConversationId) {
+        if (String(conv.conversationID) === String(conversationId ?? activeConversationId)) {
           return {
             ...conv,
             messages: [...conv.messages, assistantMessage],
@@ -109,6 +111,8 @@ export default function ChatPage({ user, onLogout }: ChatPageProps) {
             timestamp: m.timestamp
               ? new Date(m.timestamp).toISOString()
               : new Date().toISOString(),
+            sources: Array.isArray(m.sources) ? m.sources : [],
+            trace_id: m.trace_id,
             files: Array.isArray(m.files)
               ? m.files.map((f: any) => ({
                 name: f.name,

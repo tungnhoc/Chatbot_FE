@@ -23,7 +23,7 @@ export async function POST(request: Request, { params }: { params: { conversatio
     files.forEach((file) => pythonForm.append("files", file))
     pythonForm.append("description", description as string)
 
-    const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/upload_pdf/${conversationId}`, {
+    const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/conversations/${conversationId}/documents`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${token}`,
@@ -45,12 +45,12 @@ export async function POST(request: Request, { params }: { params: { conversatio
       .map((r: any) => r.document_id)
 
     return NextResponse.json({
-      success: true,
+      success: data.success,
       conversationId,
       uploaded: data.results || [],
       totalFiles: files.length,
       documentIds,
-    })
+    }, { status: res.status })
   } catch (error) {
     console.error("Upload API error:", error)
     return NextResponse.json(

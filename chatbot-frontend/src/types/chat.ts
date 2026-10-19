@@ -1,3 +1,13 @@
+export interface SourceCitation {
+  id: string
+  filename: string
+  document_id: number
+  page?: number
+  sheet?: string
+  row?: number
+  chunk_id?: number
+}
+
 export interface Message {
   messageID: number
   conversationID: number
@@ -6,6 +16,8 @@ export interface Message {
   summary?: string
   embedding?: number[]
   timestamp: string
+  sources?: SourceCitation[]
+  trace_id?: string
   files?: {
     name: string
     url?: string

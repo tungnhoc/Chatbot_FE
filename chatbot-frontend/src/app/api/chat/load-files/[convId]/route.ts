@@ -11,10 +11,11 @@ export async function GET(request: Request, context: { params: { convId: string 
 
         const token = authHeader.split(" ")[1]
         const baseUrl = process.env.NEXT_PUBLIC_API_URL;
-        const flaskUrl = `${baseUrl}/api/chat/conversations/${convId}/files`
+        const flaskUrl = `${baseUrl}/api/conversations/${convId}/files`
 
         const flaskRes = await fetch(flaskUrl, {
             method: "GET",
+            cache: "no-store",
             headers: {
                 "Content-Type": "application/json",
                 Authorization: `Bearer ${token}`,

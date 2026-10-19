@@ -57,6 +57,8 @@ export async function POST(request: Request) {
       conversationId: data.conversation_id,
       response: data.response,
       title: data.title,
+      sources: data.sources || [],
+      trace_id: data.trace_id,
     });
 
   } catch (error: any) {
