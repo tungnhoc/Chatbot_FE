@@ -1,4 +1,5 @@
 "use client"
+import { AssistantMessage } from "./assistant-message"
 import { authFetch } from "@/app/utils/authFetch"
 import { Button } from "@/components/ui/button"
 import {
@@ -380,13 +381,17 @@ export default function ChatArea({
               )}
 
               <div
-                className={`max-w-2xl rounded-2xl px-5 py-3.5 text-sm leading-relaxed ${
+                className={`min-w-0 max-w-[calc(100%-2.75rem)] sm:max-w-2xl rounded-2xl px-5 py-3.5 text-sm leading-relaxed ${
                   message.role === "user"
                     ? "bg-indigo-600 text-white rounded-br-none shadow-lg shadow-indigo-600/15"
                     : "glass-panel border border-slate-800 text-slate-100 rounded-bl-none shadow-md"
                 }`}
               >
-                <p className="break-words whitespace-pre-line leading-6">{message.text}</p>
+                {message.role === "assistant" ? (
+                  <AssistantMessage text={message.text} />
+                ) : (
+                  <p className="break-words whitespace-pre-line leading-6">{message.text}</p>
+                )}
 
                 {message.sources && message.sources.length > 0 && (
                   <div className="mt-3 border-t border-slate-700/50 pt-2">
