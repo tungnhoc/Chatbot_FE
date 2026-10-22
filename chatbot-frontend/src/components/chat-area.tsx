@@ -19,7 +19,7 @@ import {
 import type React from "react"
 import { useEffect, useRef, useState } from "react"
 import type { Conversation, SourceCitation } from "../types/chat"
-import { pollDocument, statusLabel, type UploadEntry } from "@/app/utils/documents"
+import { pollDocument, statusLabel, documentUploadUrl, documentErrorMessage, canSendWithDocuments, type UploadEntry } from "@/app/utils/documents"
 
 interface ChatAreaProps {
   conversation: Conversation | undefined
@@ -66,16 +66,17 @@ export default function ChatArea({
   const [files, setFiles] = useState<UploadEntry[]>([])
   const [documentError, setDocumentError] = useState("")
   const uploadScope = useRef<{ id?: number; controller: AbortController }>({ controller: new AbortController() })
+  const documentsUnavailable = !canSendWithDocuments(files)
   const documentsBusy = files.some(item => ["uploading", "queued", "processing"].includes(item.status))
 
   const trackDocument = async (key: string, id: string, signal: AbortSignal) => {
     try {
-      await pollDocument(id, (status, error) => {
-        if (!signal.aborted) setFiles(prev => prev.map(item => item.key === key ? { ...item, status, error } : item))
+      await pollDocument(id, (status, error, notice) => {
+        if (!signal.aborted) setFiles(prev => prev.map(item => item.key === key ? { ...item, status, error, notice } : item))
       }, signal)
     } catch (error) {
       if (!signal.aborted) setFiles(prev => prev.map(item => item.key === key ? {
-        ...item, status: "error", error: error instanceof Error ? error.message : "Kh?ng th? ki?m tra t?i li?u"
+        ...item, status: "error", error: error instanceof Error ? documentErrorMessage(error.message) : "Không thể kiểm tra tài liệu"
       } : item))
     }
   }
@@ -90,10 +91,10 @@ export default function ChatArea({
       authFetch(`/api/chat/load-files/${conversation.conversationID}`, { signal: controller.signal })
         .then(async response => {
           const data = await response.json()
-          if (!response.ok) throw new Error(data.error || "Kh?ng th? t?i danh s?ch t?i li?u")
+          if (!response.ok) throw new Error(data.error || "Không thể tải danh sách tài liệu")
           if (controller.signal.aborted) return
           const entries: UploadEntry[] = (data.files || []).map((item: { id: number; filename?: string; status?: string }) => ({
-            key: `doc-${item.id}`, id: String(item.id), name: item.filename || `T?i li?u ${item.id}`,
+            key: `doc-${item.id}`, id: String(item.id), name: item.filename || `Tài liệu ${item.id}`,
             status: item.status || "error"
           }))
           // Keep files selected while the initial list was loading.
@@ -119,7 +120,7 @@ export default function ChatArea({
 
   const handleSendMessage = async () => {
     const text = input.trim()
-    if (!text || documentsBusy || isAssistantTyping) return
+    if (!text || documentsUnavailable || isAssistantTyping) return
 
     if (!conversation) {
       alert("❌ Chưa có cuộc trò chuyện để gửi tin nhắn!")
@@ -211,19 +212,19 @@ export default function ChatArea({
     try {
       const form = new FormData()
       form.append("files", file)
-      const response = await authFetch(`/api/chat/upload-file/${scope.id}`, {
+      const response = await authFetch(documentUploadUrl(scope.id), {
         method: "POST", body: form, signal: scope.controller.signal
       })
       const data = await response.json()
-      const uploaded = data.uploaded?.find((item: { success: boolean }) => item.success)
-      if (!response.ok || !uploaded?.document_id) throw new Error(data.error || data.uploaded?.[0]?.error || "Upload th?t b?i")
+      const uploaded = (data.results || data.uploaded)?.find((item: { success: boolean }) => item.success)
+      if (!response.ok || !uploaded?.document_id) throw new Error(documentErrorMessage(data.error || data.results?.[0]?.error || data.uploaded?.[0]?.error || "Tải tài liệu lên thất bại"))
       if (scope.controller.signal.aborted) return
       const id = String(uploaded.document_id)
-      setFiles(prev => prev.map(item => item.key === key ? { ...item, id, status: uploaded.status, error: undefined } : item))
+      setFiles(prev => prev.map(item => item.key === key ? { ...item, id, status: uploaded.status || "queued", error: undefined, notice: undefined } : item))
       await trackDocument(key, id, scope.controller.signal)
     } catch (error) {
       if (!scope.controller.signal.aborted) setFiles(prev => prev.map(item => item.key === key ? {
-        ...item, status: "error", error: error instanceof Error ? error.message : "Upload th?t b?i"
+        ...item, status: "error", error: error instanceof Error ? documentErrorMessage(error.message) : "Tải tài liệu lên thất bại"
       } : item))
     }
   }
@@ -232,7 +233,7 @@ export default function ChatArea({
     const { controller } = uploadScope.current
     if (!item.id) {
       if (item.file) {
-        setFiles(prev => prev.map(entry => entry.key === item.key ? { ...entry, status: "uploading", error: undefined } : entry))
+        setFiles(prev => prev.map(entry => entry.key === item.key ? { ...entry, status: "uploading", error: undefined, notice: undefined } : entry))
         await uploadSingleFile(item.file, item.key)
       }
       return
@@ -241,12 +242,12 @@ export default function ChatArea({
       if (item.status === "failed") {
         const response = await authFetch(`/api/chat/documents/${item.id}/retry`, { method: "POST", signal: controller.signal })
         const data = await response.json()
-        if (!response.ok) throw new Error(data.error || "Kh?ng th? th? l?i")
+        if (!response.ok) throw new Error(data.error || "Không thể thử lại")
       }
-      setFiles(prev => prev.map(entry => entry.key === item.key ? { ...entry, status: "queued", error: undefined } : entry))
+      setFiles(prev => prev.map(entry => entry.key === item.key ? { ...entry, status: "queued", error: undefined, notice: undefined } : entry))
       await trackDocument(item.key, item.id, controller.signal)
     } catch (error) {
-      if (!controller.signal.aborted) setDocumentError(error instanceof Error ? error.message : "Kh?ng th? th? l?i")
+      if (!controller.signal.aborted) setDocumentError(error instanceof Error ? error.message : "Không thể thử lại")
     }
   }
 
@@ -255,7 +256,7 @@ export default function ChatArea({
     event.target.value = ""
     const supported = /\.(pdf|docx|txt|md|csv|xlsx)$/i
     if (selected.length > 10 || selected.some(file => !supported.test(file.name) || file.size > 20 * 1024 * 1024)) {
-      setDocumentError("Ch?n t?i ?a 10 file PDF, DOCX, TXT, MD, CSV ho?c XLSX; m?i file t?i ?a 20 MiB.")
+      setDocumentError("Chọn tối đa 10 tệp PDF, DOCX, TXT, MD, CSV hoặc XLSX; mỗi tệp tối đa 20 MiB.")
       return
     }
     setDocumentError("")
@@ -337,7 +338,7 @@ export default function ChatArea({
             <div>
               <h2 className="text-2xl font-bold text-white mb-2">Xin chào! Tôi có thể giúp gì cho bạn?</h2>
               <p className="text-slate-400 text-sm">
-                Hãy đặt câu hỏi, gửi nội dung cần hỗ trợ hoặc đính kèm tài liệu PDF để cùng phân tích.
+                Hãy đặt câu hỏi, gửi nội dung cần hỗ trợ hoặc đính kèm PDF, Word, Excel hoặc văn bản để cùng phân tích.
               </p>
             </div>
 
@@ -347,7 +348,7 @@ export default function ChatArea({
                 className="p-3.5 rounded-xl glass-panel border border-slate-800 hover:border-indigo-500/40 text-slate-300 hover:text-white transition-all text-xs group flex items-start justify-between"
               >
                 <div>
-                  <div className="font-semibold text-slate-200 group-hover:text-indigo-400 transition-colors">📄 Tóm tắt tài liệu PDF</div>
+                  <div className="font-semibold text-slate-200 group-hover:text-indigo-400 transition-colors">📄 Tóm tắt tài liệu</div>
                   <div className="text-slate-400 mt-1">Trích xuất nội dung cốt lõi nhanh chóng</div>
                 </div>
                 <ArrowUpRight className="w-4 h-4 text-slate-500 group-hover:text-indigo-400 transition-colors flex-shrink-0" />
@@ -389,14 +390,14 @@ export default function ChatArea({
 
                 {message.sources && message.sources.length > 0 && (
                   <div className="mt-3 border-t border-slate-700/50 pt-2">
-                    <p className="text-xs font-semibold text-indigo-300 mb-1">Ngu?n tham kh?o</p>
+                    <p className="text-xs font-semibold text-indigo-300 mb-1">Nguồn tham khảo</p>
                     <ul className="space-y-1 text-xs text-slate-300">
                       {message.sources.map(source => (
                         <li key={source.id}>
                           [{source.id}] {source.filename}
-                          {source.page ? ` ? Trang ${source.page}` : ""}
-                          {source.sheet ? ` ? Sheet ${source.sheet}` : ""}
-                          {source.row ? ` ? H?ng ${source.row}` : ""}
+                          {source.page ? ` · Trang ${source.page}` : ""}
+                          {source.sheet ? ` · Sheet ${source.sheet}` : ""}
+                          {source.row ? ` · Hàng ${source.row}` : ""}
                         </li>
                       ))}
                     </ul>
@@ -448,7 +449,8 @@ export default function ChatArea({
       <div className="p-4 sm:p-6 bg-[#0B0F17]/90 backdrop-blur-md border-t border-slate-800/80">
         <div className="max-w-4xl mx-auto">
           {documentError && <p role="alert" className="mb-2 text-sm text-rose-300">{documentError}</p>}
-          {documentsBusy && <p role="status" className="mb-2 text-xs text-indigo-300">T?i li?u ?ang ???c x? l?. B?n c? th? g?i c?u h?i khi x? l? xong.</p>}
+          {documentsUnavailable && !documentsBusy && <p role="alert" className="mb-2 text-xs text-amber-300">Tài liệu chưa sẵn sàng. Hãy kiểm tra lại hoặc tải lại file trước khi gửi câu hỏi.</p>}
+          {documentsBusy && <p role="status" className="mb-2 text-xs text-indigo-300">Tài liệu đang được xử lý. Bạn có thể gửi câu hỏi khi xử lý xong.</p>}
           {/* File Badges */}
           {files.length > 0 && (
             <div className="mb-3 flex flex-wrap gap-2">
@@ -465,18 +467,21 @@ export default function ChatArea({
                   <span className="truncate max-w-[180px]">{item.name}</span>
                   {["uploading", "queued", "processing"].includes(item.status) ? (
                     <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-400" />
-                  ) : (
+                  ) : item.status === "ready" ? (
                     <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                  ) : (
+                    <ShieldAlert className="w-3.5 h-3.5 text-rose-400" />
                   )}
                   <span>{statusLabel[item.status]}</span>
+                  {item.notice && <span className="text-amber-300 max-w-[260px] truncate" title={item.notice}>{item.notice}</span>}
                   {item.error && <span className="text-rose-300 max-w-[240px] truncate" title={item.error}>{item.error}</span>}
                   {["failed", "error"].includes(item.status) && (
                     <button type="button" onClick={() => { void retryDocument(item) }} className="underline text-indigo-300">
-                      {item.status === "failed" ? "Th? l?i" : "Ki?m tra l?i"}
+                      {item.status === "failed" ? "Thử lại" : "Kiểm tra lại"}
                     </button>
                   )}
                   <button
-                    aria-label={`B? ch?n ${item.name}`}
+                    aria-label={`Bỏ chọn ${item.name}`}
                     onClick={() => {
                       const next = files.filter((_, i) => i !== idx)
                       setFiles(next)
@@ -521,7 +526,7 @@ export default function ChatArea({
 
             <Button
               onClick={handleSendMessage}
-              disabled={!input.trim() || documentsBusy || Boolean(isAssistantTyping && !isPaused)}
+              disabled={!input.trim() || documentsUnavailable || Boolean(isAssistantTyping && !isPaused)}
               className="bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl p-2.5 h-10 w-10 disabled:opacity-40 disabled:hover:bg-indigo-600 transition-all flex items-center justify-center flex-shrink-0 shadow-md shadow-indigo-600/20"
             >
               <Send className="w-4 h-4" />
